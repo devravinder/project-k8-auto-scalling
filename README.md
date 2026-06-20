@@ -120,20 +120,24 @@ kubectl get service backend-service
 
 ```bash
 kubectl port-forward service/backend-service 8080:8080
-```
-```bash
+# or
 # in background (  redirect both stdout and stderr )
  kubectl port-forward service/backend-service 8080:8080 >/dev/null 2>&1 &
 ```
 
 ### Run JMeter Test (CLI mode)
 
+**For CPU Scaling Test:**
 ```bash
+# Run test targeting the CPU-intensive /api/load endpoint
 jmeter -n -t jmeter/test-plans/load-api.jmx -Jhost=localhost -Jport=8080
+```
 
-## or
-
-jmeter -n -t "jmeter/test-plans/load-api.jmx"
+**For Memory (RAM) Scaling Test:**
+Ensure you have applied the memory HPA: `kubectl apply -f k8s/backend-hpa-memory.yaml`.
+```bash
+# Run test targeting the memory-intensive /api/memory-load endpoint
+jmeter -n -t jmeter/test-plans/load-memory.jmx -Jhost=localhost -Jport=8080
 ```
 
 ### Watch Auto-Scaling Happen
@@ -141,20 +145,26 @@ jmeter -n -t "jmeter/test-plans/load-api.jmx"
 ```bash
 # In a separate terminal, watch HPA
 kubectl get hpa -w
-```
 
-```bash
 # Or watch pods
 kubectl get pods -w
 ```
 
 ## What Happens
 
-1. JMeter sends 100 concurrent threads, each making 50 requests to `/api/load`
-2. The `/api/load` endpoint performs CPU-intensive calculations
-3. CPU usage exceeds the 50% threshold
-4. HPA detects high CPU and scales pods from 1 up to 10
-5. After load stops, pods scale back down (after ~5 min cooldown)
+### A. During CPU Load:
+1. JMeter sends 100 concurrent threads, each making requests to `/api/load`.
+2. The `/api/load` endpoint performs CPU-intensive calculations.
+3. CPU usage exceeds the 50% threshold.
+4. HPA detects high CPU and scales pods from 1 up to 10.
+5. After load stops, pods scale back down (after ~5 min cooldown).
+
+### B. During Memory Load:
+1. JMeter requests call `/api/memory-load` to allocate chunks of memory.
+2. Each call allocates 50MB of memory which is stored in a referenced list.
+3. Average pod memory usage exceeds the 60% threshold (approx 153.6Mi of the 256Mi requested).
+4. HPA detects high memory utilization and scales pods.
+5. The memory load API automatically clears allocated chunks after 2 minutes to free memory and prevent container OOMs. After the cooldown period (~5 min), HPA scales the pods back down.
 
 ## Key Configuration
 
@@ -162,29 +172,36 @@ kubectl get pods -w
 |----------|--------|----------------------------------|
 | CPU Request | 100m | `k8s/backend-deployment.yaml`    |
 | CPU Limit | 500m | `k8s/backend-deployment.yaml`    |
-| Scale Trigger | 50% CPU | `k8s/backend-hpa.yaml`           |
-| Min Replicas | 1 | `k8s/backend-hpa.yaml`           |
-| Max Replicas | 10 | `k8s/backend-hpa.yaml`           |
-| JMeter Threads | 100 | `jmeter/test-plans/load-api.jmx` |
+| Memory Request | 256Mi | `k8s/backend-deployment.yaml`    |
+| Memory Limit | 512Mi | `k8s/backend-deployment.yaml`    |
+| CPU Scale Trigger | 50% CPU | `k8s/backend-hpa-memory.yaml`    |
+| Memory Scale Trigger | 60% Memory | `k8s/backend-hpa-memory.yaml`    |
+| Min Replicas | 1 | `k8s/backend-hpa-memory.yaml`    |
+| Max Replicas | 10 | `k8s/backend-hpa-memory.yaml`    |
+| JMeter Threads | 100 | `jmeter/test-plans/*.jmx`        |
 
 ## Project Structure
 
 ```text
 .
-├── backend/
-│   ├── Dockerfile
-│   ├── pom.xml
-│   └── src/main/java/com/example/
-│       ├── AutoscaleDemoApplication.java
+├── Dockerfile
+├── settings.gradle
+├── build.gradle
+├── src/
+│   └── main/java/com/paravar/auto_scaling/
+│       ├── AutoScalingApplication.java
 │       └── LoadController.java
 │
 ├── k8s/
 │   ├── backend-deployment.yaml
-│   ├── backend-hpa.yaml
-│   └── frontend-deployment.yaml
+│   ├── backend-hpa.yaml (CPU only)
+│   ├── backend-hpa-memory.yaml (CPU + Memory)
+│   └── metrics-server.yaml
 │
 ├── jmeter/
-│   └── load-test.jmx
+│   └── test-plans/
+│       ├── load-api.jmx
+│       └── load-memory.jmx
 │
 └── README.md
 ```
