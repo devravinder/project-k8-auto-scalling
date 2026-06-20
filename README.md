@@ -31,7 +31,7 @@ Here is a simple explanation of how the different components coordinate to auto-
 - Docker Desktop (with Kubernetes enabled)
 - kubectl
 - Kind ( to create cluster on local docker)
-- Lens ( k8slens ) ( to see k8 nodes ) 
+- Lens ( k8slens ) ( GUI to see k8 nodes ) 
 - Apache JMeter (for load testing)
 - Metrics Server (for HPA to work)
 
@@ -93,18 +93,60 @@ kind load docker-image auto-scale-app:latest --name local-cluster
 
 ### 4. Deploy to Kubernetes
 
+Depending on your scaling strategy, you can deploy different combinations of Horizontal Pod Autoscaler (HPA) and Vertical Pod Autoscaler (VPA).
+
+#### Option A: HPA (CPU-only) + VPA (Memory-only) [Recommended for Spring Boot]
+This combination allows HPA to scale out horizontally on CPU usage, while VPA dynamically adjusts container RAM allocation to prevent Out of Memory (OOM) crashes. Since they manage separate resources, there are no conflicts.
+
+*Note: If VPA is not installed on your Kind cluster, see the **VPA Installation** section under Troubleshooting.*
+
 ```bash
+# 1. Deploy the Backend Application and Service
 kubectl apply -f k8s/backend-deployment.yaml
+
+# 2. Apply CPU-only HPA
 kubectl apply -f k8s/backend-hpa.yaml
+
+# 3. Apply Memory-only VPA
+kubectl apply -f k8s/backend-vpa-memory.yaml
+```
+
+#### Option B: HPA (CPU + Memory)
+If you want to scale horizontally based on both CPU and Memory (without any vertical scaling):
+```bash
+# 1. Deploy the Backend Application and Service
+kubectl apply -f k8s/backend-deployment.yaml
+
+# 2. Apply CPU + Memory HPA
+kubectl apply -f k8s/backend-hpa-memory.yaml
+```
+
+#### Option C: VPA-only (Memory-only)
+If you only want to scale vertically on Memory usage (keeping the pod replica count fixed at 1):
+```bash
+# 1. Deploy the Backend Application and Service
+kubectl apply -f k8s/backend-deployment.yaml
+
+# 2. Apply Memory-only VPA
+kubectl apply -f k8s/backend-vpa-memory.yaml
 ```
 
 ### 5. Verify Deployment
 
 ```bash
-kubectl get pods
-kubectl get services
-kubectl get hpa
+# Check running pods and services
+kubectl get pods,svc
+
+# Check autoscaling resources
+kubectl get hpa,vpa
+
+# Verify Custom Resource Definitions are registered
+kubectl get crd
 ```
+
+> [!NOTE]
+> **Why `kubectl get crd` is used:**
+> CRD stands for **Custom Resource Definition**. Custom resources like `VerticalPodAutoscaler` (VPA) are not built into standard Kubernetes. Before you can deploy or query VPA resources, the VPA CRD must be registered in the cluster. Running `kubectl get crd` verifies if these custom resource schemas (like `verticalpodautoscalers.autoscaling.k8s.io`) are installed. Without them, the cluster won't recognize VPA manifests.
 
 ### 6. Access the App
 
@@ -134,7 +176,7 @@ jmeter -n -t jmeter/test-plans/load-api.jmx -Jhost=localhost -Jport=8080
 ```
 
 **For Memory (RAM) Scaling Test:**
-Ensure you have applied the memory HPA: `kubectl apply -f k8s/backend-hpa-memory.yaml`.
+Make sure you have applied a memory-aware autoscaler (either `k8s/backend-hpa-memory.yaml` or `k8s/backend-vpa-memory.yaml`).
 ```bash
 # Run test targeting the memory-intensive /api/memory-load endpoint
 jmeter -n -t jmeter/test-plans/load-memory.jmx -Jhost=localhost -Jport=8080
@@ -145,6 +187,10 @@ jmeter -n -t jmeter/test-plans/load-memory.jmx -Jhost=localhost -Jport=8080
 ```bash
 # In a separate terminal, watch HPA
 kubectl get hpa -w
+
+# In a separate terminal, watch VPA
+kubectl get vpa -w
+
 
 # Or watch pods
 kubectl get pods -w
@@ -174,10 +220,11 @@ kubectl get pods -w
 | CPU Limit | 500m | `k8s/backend-deployment.yaml`    |
 | Memory Request | 256Mi | `k8s/backend-deployment.yaml`    |
 | Memory Limit | 512Mi | `k8s/backend-deployment.yaml`    |
-| CPU Scale Trigger | 50% CPU | `k8s/backend-hpa-memory.yaml`    |
-| Memory Scale Trigger | 60% Memory | `k8s/backend-hpa-memory.yaml`    |
-| Min Replicas | 1 | `k8s/backend-hpa-memory.yaml`    |
-| Max Replicas | 10 | `k8s/backend-hpa-memory.yaml`    |
+| CPU Scale Trigger (HPA) | 50% CPU | `k8s/backend-hpa.yaml` / `k8s/backend-hpa-memory.yaml` |
+| Memory Scale Trigger (HPA) | 60% Memory | `k8s/backend-hpa-memory.yaml`    |
+| Memory Auto-adjust (VPA) | 128Mi - 1Gi | `k8s/backend-vpa-memory.yaml`    |
+| Min Replicas | 1 | `k8s/backend-hpa.yaml` / `k8s/backend-hpa-memory.yaml` |
+| Max Replicas | 10 | `k8s/backend-hpa.yaml` / `k8s/backend-hpa-memory.yaml` |
 | JMeter Threads | 100 | `jmeter/test-plans/*.jmx`        |
 
 ## Project Structure
@@ -194,8 +241,9 @@ kubectl get pods -w
 │
 ├── k8s/
 │   ├── backend-deployment.yaml
-│   ├── backend-hpa.yaml (CPU only)
-│   ├── backend-hpa-memory.yaml (CPU + Memory)
+│   ├── backend-hpa.yaml (CPU only HPA)
+│   ├── backend-hpa-memory.yaml (CPU + Memory HPA)
+│   ├── backend-vpa-memory.yaml (Memory VPA)
 │   └── metrics-server.yaml
 │
 ├── jmeter/
@@ -236,3 +284,62 @@ kubectl get pods -w
 - **HPA scales to max replicas immediately on startup**
     - **Why**: JVM startup (class loading, JIT compilation, Spring initialization) is CPU intensive. Since the CPU request is set to `100m` (0.1 core) and limit is `500m`, the startup CPU usage easily exceeds 100% of the requested CPU. This causes HPA to detect >50% CPU and scale up to 10 replicas.
     - **Resolution**: This is normal behavior for Java apps with low CPU requests. Once all pods finish initialization, they will idle around 2m CPU, and the HPA will automatically scale down back to 1 replica after the cooldown period (~5 minutes).
+
+- **Vertical Pod Autoscaler (VPA) Installation on local Kind/Minikube**
+    - By default, VPA components are not pre-installed on local clusters.
+    - To install VPA components:
+      ```bash
+      # Clone the official Kubernetes autoscaler repo
+      git clone https://github.com/kubernetes/autoscaler.git
+      # Apply modern manifests from master branch templated with the stable 1.7.0 tag
+      TAG=1.7.0 ./autoscaler/vertical-pod-autoscaler/hack/vpa-process-yamls.sh apply
+      # Clean up the cloned directory
+      rm -rf autoscaler
+      ```
+    - Verify that all three VPA pods are running:
+      ```bash
+      kubectl get pods -n kube-system | grep vpa
+      ```
+
+## Restart & Cleanup
+
+### 1. How to Restart
+If you modify the Spring Boot code, configuration files, or want to trigger a fresh rollout of your deployment:
+```bash
+# Rebuild the Docker image
+docker build -t auto-scale-app .
+
+# Load the updated image into Kind
+kind load docker-image auto-scale-app:latest --name local-cluster
+
+# Restart the pods to pull the new image immediately
+kubectl rollout restart deployment/backend-deployment
+```
+
+### 2. How to clean up Resources
+To clean up everything in a cluster
+```bash
+kind delete cluster --name local-cluster
+ # including hpa, VPA, CRD
+```
+
+To delete all deployed resources (backend application, HPAs, VPAs, and Metrics Server) from your Kubernetes cluster:
+```bash
+# Delete all resources created from k8s manifests
+kubectl delete -f k8s/
+```
+
+To uninstall the VPA system components:
+```bash
+# Clone the autoscaler repo temporarily
+git clone https://github.com/kubernetes/autoscaler.git
+# Run the deletion script
+TAG=1.7.0 ./autoscaler/vertical-pod-autoscaler/hack/vpa-process-yamls.sh delete
+# Clean up cloned repo
+rm -rf autoscaler
+```
+
+To delete the entire Kind local cluster:
+```bash
+kind delete cluster --name local-cluster
+```
