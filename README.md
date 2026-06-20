@@ -10,6 +10,22 @@ A minimal Spring Boot that demonstrates Kubernetes Horizontal Pod Autoscaler (HP
                                     [HPA: scales 1-10 pods when CPU > 50%]
 ```
 
+## How Auto-Scaling Works
+
+Here is a simple explanation of how the different components coordinate to auto-scale the app:
+
+### 1. Key Components
+* **Metrics Server (`k8s/metrics-server.yaml`)**: Constantly monitors the cluster and records how much CPU and memory each running pod is using.
+* **Horizontal Pod Autoscaler (HPA) (`k8s/backend-hpa.yaml`)**: Polling the Metrics Server (every 15s) to check the average CPU utilization across all pods against the target threshold.
+* **Deployment (`k8s/backend-deployment.yaml`)**: Controls the replica set. HPA instructs it to spin up or scale down pods.
+
+### 2. Workflow Sequence
+1. **CPU Baseline**: Each pod specifies a CPU **Request** of `100m` (0.1 core) as its baseline.
+2. **Traffic Load**: JMeter triggers heavy load on the `/api/load` endpoint, causing CPU usage on the pods to rise to `500m` (the set limit, representing `500%` of the requested baseline).
+3. **Threshold Check**: The HPA checks CPU usage and notices it has exceeded the target threshold of **`50%`**.
+4. **Scale Up**: HPA instructs the deployment to scale up the number of running pods (up to `10` maximum) to distribute the load.
+5. **Cooldown & Scale Down**: Once the traffic stops, CPU usage drops. HPA waits for a cooldown period (~5 minutes) and then safely terminates the idle pods down to `1` replica to save resources.
+
 ## Prerequisites
 
 - Docker Desktop (with Kubernetes enabled)
